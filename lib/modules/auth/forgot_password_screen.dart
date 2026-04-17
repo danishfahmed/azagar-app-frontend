@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:azager/core/constants/app_colors.dart';
-import 'package:azager/modules/auth/otp_screen.dart';
-import 'package:azager/modules/auth/reset_password_screen.dart';
+import 'package:azager/core/services/auth_service.dart';
+import 'package:azager/core/network/api_exception.dart';
+import 'package:azager/modules/auth/forgot_password_otp_screen.dart';
 import 'package:azager/modules/auth/signup_screen.dart';
-import 'package:azager/modules/shared/widgets/social_login_row.dart';
+// import 'package:azager/modules/shared/widgets/social_login_row.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key});
@@ -15,23 +16,48 @@ class ForgotPasswordScreen extends StatefulWidget {
 class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
+  final _authService = AuthService();
+  bool _isLoading = false;
 
   @override
   void dispose() {
     _emailController.dispose();
+    _authService.dispose();
     super.dispose();
   }
 
-  void _send() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => OtpScreen(
-          onVerified: () => Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (_) => const ResetPasswordScreen()),
-          ),
+  Future<void> _send() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final email = _emailController.text.trim();
+      await _authService.forgotPasswordSendOtp(email: email);
+
+      if (!mounted) return;
+
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ForgotPasswordOtpScreen(email: email),
         ),
-      ),
-    );
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: Colors.red),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Something went wrong. Please try again.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -84,6 +110,12 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                   controller: _emailController,
                   keyboardType: TextInputType.emailAddress,
                   decoration: _inputDecoration('Enter your email'),
+                  validator: (v) {
+                    if (v == null || v.trim().isEmpty) {
+                      return 'Email is required';
+                    }
+                    return null;
+                  },
                 ),
 
                 const Spacer(),
@@ -92,7 +124,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                 SizedBox(
                   height: 52,
                   child: ElevatedButton(
-                    onPressed: _send,
+                    onPressed: _isLoading ? null : _send,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       foregroundColor: Colors.white,
@@ -101,21 +133,29 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                       ),
                       elevation: 0,
                     ),
-                    child: const Text(
-                      'Send',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2.5,
+                            ),
+                          )
+                        : const Text(
+                            'Send',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                   ),
                 ),
 
                 const SizedBox(height: 28),
 
-                // Social login
-                const SocialLoginRow(label: 'or log in with'),
-
+                // TODO: Re-enable social login
+                // const SocialLoginRow(label: 'or log in with'),
                 const SizedBox(height: 24),
 
                 // Sign up link

@@ -1,21 +1,23 @@
+import 'package:flutter/foundation.dart';
 import 'package:azager/core/models/product_model.dart';
 import 'package:azager/core/models/cart_item_model.dart';
 
 class DummyData {
   DummyData._();
 
-  static final List<CartItem> cartItems = [
-    CartItem(product: products[0]),
-    CartItem(product: products[2]),
-  ];
+  static final List<CartItem> cartItems = [];
+
+  /// Notifier incremented whenever cartItems changes.
+  static final ValueNotifier<int> cartNotifier = ValueNotifier(0);
 
   static void addProductToCart(ProductModel product, {int qty = 1}) {
     final index = cartItems.indexWhere((item) => item.product.id == product.id);
     if (index >= 0) {
       cartItems[index].qty += qty;
-      return;
+    } else {
+      cartItems.add(CartItem(product: product, qty: qty));
     }
-    cartItems.add(CartItem(product: product, qty: qty));
+    cartNotifier.value++;
   }
 
   static const List<String> categories = [

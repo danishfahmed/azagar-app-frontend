@@ -1,22 +1,84 @@
 import 'package:flutter/material.dart';
 import 'package:azager/core/constants/app_colors.dart';
+import 'package:azager/core/network/api_exception.dart';
+import 'package:azager/core/services/product_service.dart';
 
 class ReviewScreen extends StatefulWidget {
   final String productName;
-  const ReviewScreen({super.key, required this.productName});
+  final String productId;
+  final int orderId;
+
+  const ReviewScreen({
+    super.key,
+    required this.productName,
+    required this.productId,
+    this.orderId = 1,
+  });
 
   @override
   State<ReviewScreen> createState() => _ReviewScreenState();
 }
 
 class _ReviewScreenState extends State<ReviewScreen> {
+  final _productService = ProductService();
+
   int _rating = 3;
   final _controller = TextEditingController();
+  bool _isSubmitting = false;
 
   @override
   void dispose() {
+    _productService.dispose();
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final comment = _controller.text.trim();
+    if (comment.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please write a short review comment.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isSubmitting = true);
+
+    try {
+      await _productService.submitProductReview(
+        productId: widget.productId,
+        orderId: widget.orderId,
+        rating: _rating,
+        comment: comment,
+      );
+      if (!mounted) return;
+      Navigator.pop(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Thank you for your review!'),
+          duration: Duration(seconds: 2),
+          backgroundColor: AppColors.primary,
+        ),
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: Colors.red),
+      );
+      setState(() => _isSubmitting = false);
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Unable to submit review right now.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      setState(() => _isSubmitting = false);
+    }
   }
 
   @override
@@ -60,15 +122,7 @@ class _ReviewScreenState extends State<ReviewScreen> {
           height: 50,
           width: double.infinity,
           child: ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Thank you for your review!'),
-                  duration: Duration(seconds: 2),
-                ),
-              );
-            },
+            onPressed: _isSubmitting ? null : _submit,
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
               foregroundColor: Colors.white,
@@ -77,10 +131,19 @@ class _ReviewScreenState extends State<ReviewScreen> {
                 borderRadius: BorderRadius.circular(30),
               ),
             ),
-            child: const Text(
-              'Submit',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
-            ),
+            child: _isSubmitting
+                ? const SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  )
+                : const Text(
+                    'Submit',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                  ),
           ),
         ),
       ),

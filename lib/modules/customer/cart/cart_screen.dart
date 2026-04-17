@@ -17,6 +17,14 @@ class CartScreen extends StatefulWidget {
 class _CartScreenState extends State<CartScreen> {
   List<CartItem> get _cart => DummyData.cartItems;
 
+  @override
+  void initState() {
+    super.initState();
+    DummyData.cartNotifier.addListener(_onCartChanged);
+  }
+
+  void _onCartChanged() => setState(() {});
+
   // Saved for later — next 2
   final List<ProductModel> _saved = [
     DummyData.products[3],
@@ -30,6 +38,13 @@ class _CartScreenState extends State<CartScreen> {
   ];
 
   final _discountController = TextEditingController();
+
+  @override
+  void dispose() {
+    DummyData.cartNotifier.removeListener(_onCartChanged);
+    _discountController.dispose();
+    super.dispose();
+  }
 
   String _fmt(double p) =>
       '₦${p.toStringAsFixed(0).replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (m) => '${m[1]},')}';
@@ -50,12 +65,6 @@ class _CartScreenState extends State<CartScreen> {
       _suggested.removeWhere((x) => x.id == p.id);
       DummyData.addProductToCart(p);
     });
-  }
-
-  @override
-  void dispose() {
-    _discountController.dispose();
-    super.dispose();
   }
 
   @override
@@ -334,11 +343,35 @@ class _CartItemCard extends StatelessWidget {
               width: 80,
               height: 80,
               color: const Color(0xFFF0F0F0),
-              child: const Icon(
-                Icons.image_outlined,
-                size: 32,
-                color: Color(0xFFBDBDBD),
-              ),
+              child: item.product.imageUrl.startsWith('http')
+                  ? Image.network(
+                      item.product.imageUrl,
+                      fit: BoxFit.cover,
+                      width: 80,
+                      height: 80,
+                      errorBuilder: (_, __, ___) => const Icon(
+                        Icons.image_outlined,
+                        size: 32,
+                        color: Color(0xFFBDBDBD),
+                      ),
+                    )
+                  : item.product.imageUrl.startsWith('assets/')
+                  ? Image.asset(
+                      item.product.imageUrl,
+                      fit: BoxFit.cover,
+                      width: 80,
+                      height: 80,
+                      errorBuilder: (_, __, ___) => const Icon(
+                        Icons.image_outlined,
+                        size: 32,
+                        color: Color(0xFFBDBDBD),
+                      ),
+                    )
+                  : const Icon(
+                      Icons.image_outlined,
+                      size: 32,
+                      color: Color(0xFFBDBDBD),
+                    ),
             ),
           ),
           const SizedBox(width: 10),

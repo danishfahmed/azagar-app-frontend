@@ -46,29 +46,7 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
             itemBuilder: (_, i) => InteractiveViewer(
               minScale: 0.8,
               maxScale: 4.0,
-              child: Image.asset(
-                widget.imageAssets[i],
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => Container(
-                  color: const Color(0xFF1A1A1A),
-                  child: Center(
-                    child: Text(
-                      widget.imageAssets[i].isNotEmpty
-                          ? widget.imageAssets[i]
-                                .split('/')
-                                .last
-                                .split('.')[0]
-                                .toUpperCase()[0]
-                          : '?',
-                      style: const TextStyle(
-                        fontSize: 80,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white24,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+              child: _buildViewerImage(widget.imageAssets[i]),
             ),
           ),
 
@@ -130,6 +108,39 @@ class _ImageViewerScreenState extends State<ImageViewerScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildViewerImage(String image) {
+    if (image.startsWith('http')) {
+      return Image.network(
+        image,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => _fallback(image),
+      );
+    }
+    return Image.asset(
+      image,
+      fit: BoxFit.contain,
+      errorBuilder: (_, __, ___) => _fallback(image),
+    );
+  }
+
+  Widget _fallback(String image) {
+    return Container(
+      color: const Color(0xFF1A1A1A),
+      child: Center(
+        child: Text(
+          image.isNotEmpty
+              ? image.split('/').last.split('.')[0].toUpperCase()[0]
+              : '?',
+          style: const TextStyle(
+            fontSize: 80,
+            fontWeight: FontWeight.w800,
+            color: Colors.white24,
+          ),
+        ),
       ),
     );
   }

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:azager/core/constants/app_colors.dart';
 import 'package:azager/core/constants/dummy_data.dart';
 import 'package:azager/core/models/product_model.dart';
+import 'package:azager/core/network/api_exception.dart';
+import 'package:azager/core/services/product_service.dart';
 import 'package:azager/modules/customer/product/product_details/product_details_screen.dart';
 
 class WishlistScreen extends StatefulWidget {
@@ -12,47 +14,138 @@ class WishlistScreen extends StatefulWidget {
 }
 
 class _WishlistScreenState extends State<WishlistScreen> {
-  // Start with first 3 products as wishlisted items
-  late List<ProductModel> _items;
+  final _wishlistService = WishlistService();
+
+  bool _isLoading = true;
+  String? _error;
+  List<ProductModel> _items = const [];
 
   @override
   void initState() {
     super.initState();
-    _items = DummyData.products.take(3).toList();
+    _fetchWishlist();
   }
 
-  void _remove(ProductModel p) =>
-      setState(() => _items.removeWhere((x) => x.id == p.id));
+  @override
+  void dispose() {
+    _wishlistService.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fetchWishlist() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final items = await _wishlistService.getWishlist();
+      if (!mounted) return;
+      setState(() {
+        _items = items.map((e) => e.copyWith(isFavorite: true)).toList();
+        _isLoading = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.message;
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Unable to load wishlist right now.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _remove(ProductModel product) async {
+    final old = _items;
+    setState(() {
+      _items = _items.where((x) => x.id != product.id).toList();
+    });
+
+    try {
+      await _wishlistService.toggleFavorite(
+        productId: product.id,
+        currentFavoriteState: true,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _items = old);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not remove item from wishlist'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
 
   String _formatPrice(double price) =>
       '₦${price.toStringAsFixed(0).replaceAllMapped(RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'), (m) => '${m[1]},')}';
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Scaffold(
       backgroundColor: AppColors.scaffold,
       appBar: AppBar(
         backgroundColor: AppColors.scaffold,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(
+          icon: Icon(
             Icons.arrow_back_ios_new,
             size: 18,
-            color: AppColors.black,
+            color: theme.colorScheme.onSurface,
           ),
           onPressed: () => Navigator.pop(context),
         ),
-        title: const Text(
+        title: Text(
           'My Wishlist',
           style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
-            color: AppColors.textPrimary,
+            color: theme.colorScheme.onSurface,
           ),
         ),
         centerTitle: true,
       ),
-      body: _items.isEmpty
+      body: _isLoading
+          ? const Center(
+              child: CircularProgressIndicator(color: AppColors.primary),
+            )
+          : _error != null
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _error!,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ElevatedButton(
+                      onPressed: _fetchWishlist,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: const Text('Retry'),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          : _items.isEmpty
           ? const Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -73,27 +166,32 @@ class _WishlistScreenState extends State<WishlistScreen> {
                 ],
               ),
             )
-          : ListView.separated(
-              padding: const EdgeInsets.all(16),
-              itemCount: _items.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 12),
-              itemBuilder: (_, i) => _WishlistCard(
-                product: _items[i],
-                onRemove: () => _remove(_items[i]),
-                formatPrice: _formatPrice,
-                onAddToCart: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('${_items[i].name} added to cart'),
-                      backgroundColor: AppColors.primary,
-                      duration: const Duration(seconds: 2),
+          : RefreshIndicator(
+              color: AppColors.primary,
+              onRefresh: _fetchWishlist,
+              child: ListView.separated(
+                padding: const EdgeInsets.all(16),
+                itemCount: _items.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 12),
+                itemBuilder: (_, i) => _WishlistCard(
+                  product: _items[i],
+                  onRemove: () => _remove(_items[i]),
+                  formatPrice: _formatPrice,
+                  onAddToCart: () {
+                    DummyData.addProductToCart(_items[i]);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('${_items[i].name} added to cart'),
+                        backgroundColor: AppColors.primary,
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => ProductDetailsScreen(product: _items[i]),
                     ),
-                  );
-                },
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => ProductDetailsScreen(product: _items[i]),
                   ),
                 ),
               ),
@@ -119,36 +217,38 @@ class _WishlistCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isNetwork = product.imageUrl.startsWith('http');
+
     return GestureDetector(
       onTap: onTap,
       child: Container(
         height: 110,
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: Theme.of(context).cardColor,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: AppColors.lightGrey),
         ),
         child: Row(
           children: [
-            // Image
             ClipRRect(
               borderRadius: const BorderRadius.horizontal(
                 left: Radius.circular(12),
               ),
-              child: Container(
+              child: SizedBox(
                 width: 100,
-                color: const Color(0xFFF0F0F0),
-                child: const Center(
-                  child: Icon(
-                    Icons.image_outlined,
-                    size: 40,
-                    color: Color(0xFFBDBDBD),
-                  ),
-                ),
+                child: isNetwork
+                    ? Image.network(
+                        product.imageUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _imageFallback(),
+                      )
+                    : Image.asset(
+                        product.imageUrl,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, __, ___) => _imageFallback(),
+                      ),
               ),
             ),
-
-            // Info
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(
@@ -238,6 +338,15 @@ class _WishlistCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _imageFallback() {
+    return Container(
+      color: const Color(0xFFF0F0F0),
+      child: const Center(
+        child: Icon(Icons.image_outlined, size: 40, color: Color(0xFFBDBDBD)),
       ),
     );
   }

@@ -41,13 +41,21 @@ class ProductCard extends StatelessWidget {
                   top: Radius.circular(12),
                 ),
                 child: product.imageUrl.isNotEmpty
-                    ? Image.asset(
-                        product.imageUrl,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) =>
-                            _ProductPlaceholder(name: product.name),
-                      )
+                    ? (product.imageUrl.startsWith('http')
+                          ? Image.network(
+                              product.imageUrl,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) =>
+                                  _ProductPlaceholder(name: product.name),
+                            )
+                          : Image.asset(
+                              product.imageUrl,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) =>
+                                  _ProductPlaceholder(name: product.name),
+                            ))
                     : _ProductPlaceholder(name: product.name),
               ),
             ),

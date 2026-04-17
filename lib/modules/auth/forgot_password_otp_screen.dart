@@ -4,23 +4,19 @@ import 'package:flutter/services.dart';
 import 'package:azager/core/constants/app_colors.dart';
 import 'package:azager/core/services/auth_service.dart';
 import 'package:azager/core/network/api_exception.dart';
-import 'package:azager/modules/auth/login_screen.dart';
+import 'package:azager/modules/auth/reset_password_screen.dart';
 
-class OtpScreen extends StatefulWidget {
-  /// The email address the OTP was sent to.
+class ForgotPasswordOtpScreen extends StatefulWidget {
   final String email;
 
-  /// Optional callback called after successful OTP verification.
-  /// If null, navigates to [LoginScreen].
-  final VoidCallback? onVerified;
-
-  const OtpScreen({super.key, required this.email, this.onVerified});
+  const ForgotPasswordOtpScreen({super.key, required this.email});
 
   @override
-  State<OtpScreen> createState() => _OtpScreenState();
+  State<ForgotPasswordOtpScreen> createState() =>
+      _ForgotPasswordOtpScreenState();
 }
 
-class _OtpScreenState extends State<OtpScreen> {
+class _ForgotPasswordOtpScreenState extends State<ForgotPasswordOtpScreen> {
   final List<TextEditingController> _controllers = List.generate(
     4,
     (_) => TextEditingController(),
@@ -30,7 +26,6 @@ class _OtpScreenState extends State<OtpScreen> {
   bool _isVerifying = false;
   bool _isResending = false;
 
-  // Resend timer
   Timer? _resendTimer;
   int _resendCountdown = 30;
   bool get _canResend => _resendCountdown == 0;
@@ -89,25 +84,18 @@ class _OtpScreenState extends State<OtpScreen> {
     setState(() => _isVerifying = true);
 
     try {
-      await _authService.verifyOtp(email: widget.email, otp: otp);
+      final response = await _authService.forgotPasswordVerifyOtp(
+        email: widget.email,
+        otp: otp,
+      );
 
       if (!mounted) return;
 
-      if (widget.onVerified != null) {
-        widget.onVerified!();
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Account verified successfully!'),
-            backgroundColor: AppColors.primary,
-            duration: Duration(seconds: 2),
-          ),
-        );
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const LoginScreen()),
-          (route) => false,
-        );
-      }
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (_) => ResetPasswordScreen(token: response.token),
+        ),
+      );
     } on ApiException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -132,7 +120,7 @@ class _OtpScreenState extends State<OtpScreen> {
     setState(() => _isResending = true);
 
     try {
-      await _authService.resendOtp(email: widget.email);
+      await _authService.forgotPasswordSendOtp(email: widget.email);
 
       if (!mounted) return;
 
@@ -173,7 +161,6 @@ class _OtpScreenState extends State<OtpScreen> {
             children: [
               const SizedBox(height: 60),
 
-              // Title
               const Text(
                 'Verify Code',
                 style: TextStyle(
@@ -185,7 +172,7 @@ class _OtpScreenState extends State<OtpScreen> {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Please verify the OTP to move ahead.',
+                'Please verify the OTP to reset your password.',
                 style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
                 textAlign: TextAlign.center,
               ),

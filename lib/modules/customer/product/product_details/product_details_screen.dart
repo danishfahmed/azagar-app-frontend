@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:azager/core/constants/app_colors.dart';
 import 'package:azager/core/constants/dummy_data.dart';
 import 'package:azager/core/models/product_model.dart';
+import 'package:azager/core/network/api_exception.dart';
+import 'package:azager/core/services/product_service.dart';
 import 'package:azager/modules/customer/product/product_details/image_viewer_screen.dart';
 import 'package:azager/modules/customer/checkout/review_screen.dart';
 import 'package:azager/modules/shared/widgets/product_card.dart';
@@ -16,12 +18,19 @@ class ProductDetailsScreen extends StatefulWidget {
 }
 
 class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
+  final _productService = ProductService();
+  final _wishlistService = WishlistService();
+
   int _selectedImage = 0;
   int _selectedColor = 0;
   int _selectedDelivery = 0;
   int _qty = 1;
   bool _wishlisted = false;
   bool _expanded = false;
+  bool _isLoadingDetails = false;
+
+  ProductModel? _product;
+  List<ProductModel> _relatedProducts = const [];
 
   final PageController _pageController = PageController();
 
@@ -40,22 +49,99 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
     Color(0xFFE8F5E9),
   ];
 
-  static const List<Map<String, String>> _deliveryOptions = [
-    {'label': 'Doorstep', 'price': '₦2,500'},
-    {'label': 'Pickup', 'price': 'FREE'},
-  ];
+  List<Map<String, String>> get _deliveryOptions {
+    final methods = _currentProduct.deliveryMethods;
+    if (methods.isEmpty) {
+      return const [
+        {'label': 'Doorstep', 'price': '₦2,500'},
+        {'label': 'Pickup', 'price': 'FREE'},
+      ];
+    }
+    return methods.map((m) {
+      final priceStr = m.price <= 0 ? 'FREE' : _formatPrice(m.price);
+      return {'label': m.name, 'price': priceStr};
+    }).toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _product = widget.product;
+    _wishlisted = widget.product.isFavorite;
+    _loadProductDetails();
+  }
 
   List<String> get _imageAssets {
-    final url = widget.product.imageUrl;
-    if (url.isEmpty) return [];
-    // Show same image in all 4 slots for demo
-    return [url, url, url, url];
+    final product = _currentProduct;
+    if (product.images.isNotEmpty) return product.images;
+    if (product.imageUrl.isEmpty) return [];
+    return [product.imageUrl];
   }
+
+  ProductModel get _currentProduct => _product ?? widget.product;
 
   @override
   void dispose() {
     _pageController.dispose();
+    _productService.dispose();
+    _wishlistService.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadProductDetails() async {
+    if (widget.product.id.isEmpty) return;
+    setState(() => _isLoadingDetails = true);
+
+    try {
+      final details = await _productService.getProductDetails(
+        productId: widget.product.id,
+      );
+      if (!mounted) return;
+      setState(() {
+        _product = details.product;
+        _relatedProducts = details.relatedProducts;
+        _wishlisted = details.product.isFavorite;
+        _isLoadingDetails = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isLoadingDetails = false);
+    }
+  }
+
+  Future<void> _toggleWishlist() async {
+    final product = _currentProduct;
+    if (product.id.isEmpty) return;
+
+    final old = _wishlisted;
+    setState(() => _wishlisted = !_wishlisted);
+
+    try {
+      final value = await _wishlistService.toggleFavorite(
+        productId: product.id,
+        currentFavoriteState: old,
+      );
+      if (!mounted) return;
+      setState(() {
+        _wishlisted = value;
+        _product = _currentProduct.copyWith(isFavorite: value);
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _wishlisted = old);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: Colors.red),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _wishlisted = old);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not update wishlist'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   void _openGallery() {
@@ -133,15 +219,21 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final product = widget.product;
+    final product = _currentProduct;
     final screenWidth = MediaQuery.of(context).size.width;
     final isWide = screenWidth >= 1000;
-    final desc =
+    final fallbackDesc =
         'The ${product.name} Power Bank is a high-capacity portable charger designed for fast and reliable performance.\n\n'
         'Its massive battery provides enough full charges for most smartphones, making it ideal for travel and daily use.\n\n'
         'With 22.5W fast charging and PD Power, it can charge compatible devices up to 40% in just 30 minutes while maintaining a smart temperature control and charging speed.\n\n'
         'It features a smart digital display to show the remaining battery level.\n\n'
         'Built-in active protection ensures secure and efficient charging every time.';
+    final desc = product.description?.trim().isNotEmpty == true
+        ? product.description!
+        : fallbackDesc;
+    final relatedProducts = _relatedProducts.isNotEmpty
+        ? _relatedProducts
+        : DummyData.products;
 
     if (isWide) {
       return Scaffold(
@@ -162,6 +254,10 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
       ),
       body: CustomScrollView(
         slivers: [
+          if (_isLoadingDetails)
+            const SliverToBoxAdapter(
+              child: LinearProgressIndicator(color: AppColors.primary),
+            ),
           // ── Image section ─────────────────────────────────────
           SliverToBoxAdapter(
             child: Stack(
@@ -180,28 +276,13 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                       itemBuilder: (_, i) {
                         final assets = _imageAssets;
                         if (assets.isNotEmpty) {
-                          return Image.asset(
-                            assets[i],
+                          return _buildProductImage(
+                            image: assets[i],
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Container(
-                              color:
-                                  _placeholderColors[i %
-                                      _placeholderColors.length],
-                              child: Center(
-                                child: Text(
-                                  widget.product.name.isNotEmpty
-                                      ? widget.product.name[0].toUpperCase()
-                                      : '?',
-                                  style: TextStyle(
-                                    fontSize: 80,
-                                    fontWeight: FontWeight.w800,
-                                    color: AppColors.primary.withValues(
-                                      alpha: 0.3,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
+                            fallbackIndex: i,
+                            letter: _currentProduct.name.isNotEmpty
+                                ? _currentProduct.name[0].toUpperCase()
+                                : '?',
                           );
                         }
                         return Container(
@@ -252,7 +333,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                   top: 44,
                   right: 16,
                   child: GestureDetector(
-                    onTap: () => setState(() => _wishlisted = !_wishlisted),
+                    onTap: _toggleWishlist,
                     child: Container(
                       width: 36,
                       height: 36,
@@ -304,50 +385,47 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
             child: Container(
               height: 68,
               color: Theme.of(context).cardColor,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Row(
-                children: List.generate(
-                  _imageAssets.isNotEmpty ? _imageAssets.length : 1,
-                  (i) => GestureDetector(
-                    onTap: () {
-                      _pageController.animateToPage(
-                        i,
-                        duration: const Duration(milliseconds: 250),
-                        curve: Curves.easeInOut,
-                      );
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      width: 52,
-                      height: 52,
-                      margin: const EdgeInsets.only(right: 8),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: _selectedImage == i
-                              ? AppColors.primary
-                              : Colors.transparent,
-                          width: 2,
-                        ),
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: _imageAssets.isNotEmpty ? _imageAssets.length : 1,
+                itemBuilder: (_, i) => GestureDetector(
+                  onTap: () {
+                    _pageController.animateToPage(
+                      i,
+                      duration: const Duration(milliseconds: 250),
+                      curve: Curves.easeInOut,
+                    );
+                  },
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: 52,
+                    height: 52,
+                    margin: const EdgeInsets.only(right: 8),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: _selectedImage == i
+                            ? AppColors.primary
+                            : Colors.transparent,
+                        width: 2,
                       ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: _imageAssets.isNotEmpty
-                            ? Image.asset(
-                                _imageAssets[i],
-                                fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => Container(
-                                  color:
-                                      _placeholderColors[i %
-                                          _placeholderColors.length],
-                                ),
-                              )
-                            : Container(
-                                color:
-                                    _placeholderColors[i %
-                                        _placeholderColors.length],
-                              ),
-                      ),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: _imageAssets.isNotEmpty
+                          ? _buildProductImage(
+                              image: _imageAssets[i],
+                              fit: BoxFit.cover,
+                              fallbackIndex: i,
+                              letter: '',
+                            )
+                          : Container(
+                              color:
+                                  _placeholderColors[i %
+                                      _placeholderColors.length],
+                            ),
                     ),
                   ),
                 ),
@@ -405,7 +483,10 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => ReviewScreen(productName: product.name),
+                        builder: (_) => ReviewScreen(
+                          productName: product.name,
+                          productId: product.id,
+                        ),
                       ),
                     ),
                     child: Row(
@@ -465,9 +546,11 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      const Text(
-                        'Azager Official',
-                        style: TextStyle(
+                      Text(
+                        product.sellerName.isNotEmpty
+                            ? product.sellerName
+                            : 'Azager Official',
+                        style: const TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                           color: AppColors.textPrimary,
@@ -506,34 +589,39 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Row(
-                    children: List.generate(
-                      _colors.length,
-                      (i) => GestureDetector(
-                        onTap: () => setState(() => _selectedColor = i),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 180),
-                          width: 28,
-                          height: 28,
-                          margin: const EdgeInsets.only(right: 10),
-                          decoration: BoxDecoration(
-                            color: _colors[i],
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: _selectedColor == i
-                                  ? AppColors.primary
-                                  : Colors.transparent,
-                              width: 2.5,
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: List.generate(
+                        _colors.length,
+                        (i) => GestureDetector(
+                          onTap: () => setState(() => _selectedColor = i),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 180),
+                            width: 28,
+                            height: 28,
+                            margin: const EdgeInsets.only(right: 10),
+                            decoration: BoxDecoration(
+                              color: _colors[i],
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: _selectedColor == i
+                                    ? AppColors.primary
+                                    : Colors.transparent,
+                                width: 2.5,
+                              ),
+                              boxShadow: _selectedColor == i
+                                  ? [
+                                      BoxShadow(
+                                        color: _colors[i].withValues(
+                                          alpha: 0.4,
+                                        ),
+                                        blurRadius: 6,
+                                        spreadRadius: 1,
+                                      ),
+                                    ]
+                                  : [],
                             ),
-                            boxShadow: _selectedColor == i
-                                ? [
-                                    BoxShadow(
-                                      color: _colors[i].withValues(alpha: 0.4),
-                                      blurRadius: 6,
-                                      spreadRadius: 1,
-                                    ),
-                                  ]
-                                : [],
                           ),
                         ),
                       ),
@@ -595,7 +683,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    _expanded ? desc : '${desc.substring(0, 120)}...',
+                    _expanded ? desc : _truncateText(desc, 120),
                     style: const TextStyle(
                       fontSize: 13,
                       color: AppColors.textSecondary,
@@ -641,11 +729,11 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                itemCount: DummyData.products.length,
+                itemCount: relatedProducts.length,
                 separatorBuilder: (_, __) => const SizedBox(width: 12),
                 itemBuilder: (_, i) => SizedBox(
                   width: 164,
-                  child: ProductCard(product: DummyData.products[i]),
+                  child: ProductCard(product: relatedProducts[i]),
                 ),
               ),
             ),
@@ -705,15 +793,18 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                   child: Wrap(
                     spacing: 12,
                     runSpacing: 12,
-                    children: DummyData.products
-                        .take(6)
-                        .map(
-                          (item) => SizedBox(
-                            width: 180,
-                            child: ProductCard(product: item),
-                          ),
-                        )
-                        .toList(),
+                    children:
+                        (_relatedProducts.isNotEmpty
+                                ? _relatedProducts
+                                : DummyData.products)
+                            .take(6)
+                            .map(
+                              (item) => SizedBox(
+                                width: 180,
+                                child: ProductCard(product: item),
+                              ),
+                            )
+                            .toList(),
                   ),
                 ),
               ],
@@ -750,14 +841,11 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                     itemBuilder: (_, i) {
                       final assets = _imageAssets;
                       if (assets.isNotEmpty) {
-                        return Image.asset(
-                          assets[i],
+                        return _buildProductImage(
+                          image: assets[i],
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Container(
-                            color:
-                                _placeholderColors[i %
-                                    _placeholderColors.length],
-                          ),
+                          fallbackIndex: i,
+                          letter: '',
                         );
                       }
                       return Container(
@@ -792,7 +880,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                 top: 16,
                 right: 16,
                 child: GestureDetector(
-                  onTap: () => setState(() => _wishlisted = !_wishlisted),
+                  onTap: _toggleWishlist,
                   child: Container(
                     width: 40,
                     height: 40,
@@ -842,14 +930,11 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(9),
                   child: _imageAssets.isNotEmpty
-                      ? Image.asset(
-                          _imageAssets[i],
+                      ? _buildProductImage(
+                          image: _imageAssets[i],
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => Container(
-                            color:
-                                _placeholderColors[i %
-                                    _placeholderColors.length],
-                          ),
+                          fallbackIndex: i,
+                          letter: '',
                         )
                       : Container(
                           color:
@@ -889,14 +974,15 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
             ),
           ),
           const SizedBox(height: 10),
-          Text(
-            'All in one swallow food cooker with automatic pounding. One touch operation, authentic hand pounded taste, cooks in 40 to 45 minutes, serves 4 to 5, saves time and energy.',
-            style: TextStyle(
-              fontSize: 16,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-              height: 1.45,
+          if (description.isNotEmpty)
+            Text(
+              _truncateText(description, 150),
+              style: TextStyle(
+                fontSize: 16,
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                height: 1.45,
+              ),
             ),
-          ),
           const SizedBox(height: 14),
           Row(
             children: [
@@ -1076,7 +1162,7 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            _expanded ? description : '${description.substring(0, 180)}...',
+            _expanded ? description : _truncateText(description, 180),
             style: const TextStyle(
               fontSize: 15,
               color: AppColors.textSecondary,
@@ -1097,6 +1183,53 @@ class _ProductDetailsScreenState extends State<ProductDetailsScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildProductImage({
+    required String image,
+    required BoxFit fit,
+    required int fallbackIndex,
+    required String letter,
+  }) {
+    if (image.startsWith('http')) {
+      return Image.network(
+        image,
+        fit: fit,
+        errorBuilder: (_, __, ___) =>
+            _imageFallback(index: fallbackIndex, letter: letter),
+      );
+    }
+
+    return Image.asset(
+      image,
+      fit: fit,
+      errorBuilder: (_, __, ___) =>
+          _imageFallback(index: fallbackIndex, letter: letter),
+    );
+  }
+
+  Widget _imageFallback({required int index, required String letter}) {
+    final char = letter.isNotEmpty ? letter : '';
+    return Container(
+      color: _placeholderColors[index % _placeholderColors.length],
+      child: char.isEmpty
+          ? null
+          : Center(
+              child: Text(
+                char,
+                style: TextStyle(
+                  fontSize: 80,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.primary.withValues(alpha: 0.3),
+                ),
+              ),
+            ),
+    );
+  }
+
+  String _truncateText(String text, int max) {
+    if (text.length <= max) return text;
+    return '${text.substring(0, max)}...';
   }
 }
 

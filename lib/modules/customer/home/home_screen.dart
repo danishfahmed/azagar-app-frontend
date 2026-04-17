@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:azager/core/constants/app_colors.dart';
-import 'package:azager/core/constants/dummy_data.dart';
+import 'package:azager/core/models/home_models.dart';
 import 'package:azager/core/models/product_model.dart';
+import 'package:azager/core/services/home_service.dart';
+import 'package:azager/core/services/product_service.dart';
+import 'package:azager/core/network/api_exception.dart';
 import 'package:azager/modules/customer/category/category_screen.dart';
 import 'package:azager/modules/customer/search/search_screen.dart';
 import 'package:azager/modules/customer/wishlist/wishlist_screen.dart';
@@ -16,20 +19,116 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final _homeService = HomeService();
+  final _productService = ProductService();
   int _selectedCategory = 0;
   int _bannerPage = 0;
   final PageController _bannerController = PageController();
 
+  bool _isLoading = true;
+  String? _error;
+  HomeResponse? _homeData;
+
+  // Category-filtered products
+  List<ProductModel>? _categoryProducts;
+  bool _isCategoryLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchHome();
+  }
+
   @override
   void dispose() {
     _bannerController.dispose();
+    _homeService.dispose();
+    _productService.dispose();
     super.dispose();
   }
 
-  List<ProductModel> get _filteredProducts {
-    if (_selectedCategory == 0) return DummyData.products;
-    final cat = DummyData.categories[_selectedCategory];
-    return DummyData.products.where((p) => p.category == cat).toList();
+  Future<void> _fetchCategoryProducts(int categoryId) async {
+    setState(() => _isCategoryLoading = true);
+    try {
+      final response = await _productService.getCategoryProducts(
+        categoryId: categoryId,
+      );
+      if (!mounted) return;
+      setState(() {
+        _categoryProducts = response.products;
+        _isCategoryLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _categoryProducts = [];
+        _isCategoryLoading = false;
+      });
+    }
+  }
+
+  void _onCategorySelected(int index) {
+    setState(() {
+      _selectedCategory = index;
+      _categoryProducts = null;
+    });
+    if (index > 0 && _homeData != null) {
+      final category = _homeData!.categories[index - 1]; // offset for 'All'
+      _fetchCategoryProducts(category.id);
+    }
+  }
+
+  Future<void> _fetchHome() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final response = await _homeService.fetchHome();
+      if (!mounted) return;
+      setState(() {
+        _homeData = response;
+        _isLoading = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.message;
+        _isLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Something went wrong. Pull down to retry.';
+        _isLoading = false;
+      });
+    }
+  }
+
+  /// Convert API [HomeProduct] to the [ProductModel] used by ProductCard.
+  ProductModel _toProductModel(HomeProduct p) {
+    return ProductModel(
+      id: p.id.toString(),
+      name: p.name,
+      price: p.discountPrice > 0 ? p.discountPrice : p.price,
+      originalPrice: p.discountPrice > 0 ? p.price : null,
+      rating: p.rating,
+      reviewCount: int.tryParse(p.totalReviews) ?? 0,
+      imageUrl: p.thumbnail,
+      category: '',
+      sellerId: p.shop.id.toString(),
+      sellerName: p.shop.name,
+      isFavorite: p.isFavorite,
+    );
+  }
+
+  List<String> get _categoryNames {
+    final cats = <String>['All'];
+    if (_homeData != null) {
+      cats.addAll(_homeData!.categories.map((c) => c.name));
+    }
+    return cats;
   }
 
   @override
@@ -38,255 +137,223 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       backgroundColor: AppColors.scaffold,
       body: SafeArea(
-        child: CustomScrollView(
-          slivers: [
-            // ── App Bar ──────────────────────────────────────────
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
-                child: Row(
-                  children: [
-                    Image.asset(
-                      'assets/images/logo.png',
-                      height: 32,
-                      width: 104,
-                      fit: BoxFit.contain,
-                    ),
-                    const Spacer(),
-                    IconButton(
-                      onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const NotificationsScreen(),
-                        ),
-                      ),
-                      icon: Icon(
-                        Icons.notifications_outlined,
-                        color: theme.colorScheme.onSurface,
-                        size: 24,
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const WishlistScreen(),
-                        ),
-                      ),
-                      icon: Icon(
-                        Icons.favorite_border,
-                        color: theme.colorScheme.onSurface,
-                        size: 24,
-                      ),
-                    ),
-                  ],
-                ),
+        child: _isLoading
+            ? const Center(
+                child: CircularProgressIndicator(color: AppColors.primary),
+              )
+            : _error != null
+            ? _ErrorView(error: _error!, onRetry: _fetchHome)
+            : RefreshIndicator(
+                color: AppColors.primary,
+                onRefresh: _fetchHome,
+                child: _buildContent(theme),
               ),
-            ),
+      ),
+    );
+  }
 
-            // ── Search Bar ────────────────────────────────────────
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: _SearchBar(
-                  onTap: () => Navigator.push(
+  Widget _buildContent(ThemeData theme) {
+    final data = _homeData!;
+    final banners = data.banners;
+    final ads = data.ads;
+    final popularProducts = data.popularProducts.map(_toProductModel).toList();
+    final justForYouProducts = data.justForYou.products
+        .map(_toProductModel)
+        .toList();
+
+    return CustomScrollView(
+      slivers: [
+        // ── App Bar ──────────────────────────────────────────
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              children: [
+                Image.asset(
+                  'assets/images/logo.png',
+                  height: 32,
+                  width: 104,
+                  fit: BoxFit.contain,
+                ),
+                const Spacer(),
+                IconButton(
+                  onPressed: () => Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (_) => const SearchScreen()),
-                  ),
-                ),
-              ),
-            ),
-
-            const SliverToBoxAdapter(child: SizedBox(height: 16)),
-
-            // ── Banner Carousel ───────────────────────────────────
-            SliverToBoxAdapter(
-              child: Column(
-                children: [
-                  SizedBox(
-                    height: 140,
-                    child: PageView(
-                      controller: _bannerController,
-                      onPageChanged: (i) => setState(() => _bannerPage = i),
-                      children: const [
-                        _BannerCard(
-                          imageAsset: 'assets/images/banner_1.png',
-                          title: 'Stay secure',
-                          subtitle: 'Remember to always stay alert',
-                          fallbackColor: Color(0xFF1A4F8A),
-                        ),
-                        _BannerCard(
-                          imageAsset: 'assets/images/banner_2.png',
-                          title: 'Mega Sale',
-                          subtitle: 'Up to 70% OFF on selected items',
-                          fallbackColor: Color(0xFFE98610),
-                        ),
-                        _BannerCard(
-                          imageAsset: 'assets/images/banner_3.png',
-                          title: 'New Arrivals',
-                          subtitle: 'Check out the latest products',
-                          fallbackColor: Color(0xFF2E7D32),
-                        ),
-                      ],
+                    MaterialPageRoute(
+                      builder: (_) => const NotificationsScreen(),
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: List.generate(
-                      3,
-                      (i) => AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        margin: const EdgeInsets.symmetric(horizontal: 3),
-                        width: _bannerPage == i ? 16 : 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          color: _bannerPage == i
-                              ? AppColors.primary
-                              : AppColors.lightGrey,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
+                  icon: Icon(
+                    Icons.notifications_outlined,
+                    color: theme.colorScheme.onSurface,
+                    size: 24,
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const WishlistScreen()),
+                  ),
+                  icon: Icon(
+                    Icons.favorite_border,
+                    color: theme.colorScheme.onSurface,
+                    size: 24,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        // ── Search Bar ────────────────────────────────────────
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _SearchBar(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const SearchScreen()),
+              ),
+            ),
+          ),
+        ),
+
+        const SliverToBoxAdapter(child: SizedBox(height: 16)),
+
+        // ── Banner Carousel ───────────────────────────────────
+        if (banners.isNotEmpty)
+          SliverToBoxAdapter(
+            child: Column(
+              children: [
+                SizedBox(
+                  height: 140,
+                  child: PageView.builder(
+                    controller: _bannerController,
+                    onPageChanged: (i) => setState(() => _bannerPage = i),
+                    itemCount: banners.length,
+                    itemBuilder: (_, i) => _BannerCard(banner: banners[i]),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(
+                    banners.length,
+                    (i) => AnimatedContainer(
+                      duration: const Duration(milliseconds: 200),
+                      margin: const EdgeInsets.symmetric(horizontal: 3),
+                      width: _bannerPage == i ? 16 : 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: _bannerPage == i
+                            ? AppColors.primary
+                            : AppColors.lightGrey,
+                        borderRadius: BorderRadius.circular(4),
                       ),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
+          ),
 
-            const SliverToBoxAdapter(child: SizedBox(height: 16)),
+        const SliverToBoxAdapter(child: SizedBox(height: 16)),
 
-            // ── Category Chips ────────────────────────────────────
-            SliverToBoxAdapter(
-              child: SizedBox(
-                height: 38,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: DummyData.categories.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (_, i) {
-                    final selected = _selectedCategory == i;
-                    return GestureDetector(
-                      onTap: () => setState(() => _selectedCategory = i),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: selected
-                              ? AppColors.primary
-                              : Colors.transparent,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: selected
-                                ? AppColors.primary
-                                : AppColors.lightGrey,
-                          ),
-                        ),
-                        child: Text(
-                          DummyData.categories[i],
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                            color: selected
-                                ? Colors.white
-                                : AppColors.textSecondary,
-                          ),
-                        ),
+        // ── Category Chips ────────────────────────────────────
+        SliverToBoxAdapter(
+          child: SizedBox(
+            height: 38,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: _categoryNames.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (_, i) {
+                final selected = _selectedCategory == i;
+                return GestureDetector(
+                  onTap: () => _onCategorySelected(i),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: selected ? AppColors.primary : Colors.transparent,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: selected
+                            ? AppColors.primary
+                            : AppColors.lightGrey,
                       ),
-                    );
-                  },
-                ),
-              ),
-            ),
-
-            const SliverToBoxAdapter(child: SizedBox(height: 16)),
-
-            // ── Sale Banners ──────────────────────────────────────
-            SliverToBoxAdapter(
-              child: SizedBox(
-                height: 110,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  children: const [
-                    _SaleBannerCard(
-                      imageAsset: 'assets/images/sale_1.png',
-                      title: 'MEGA SALE',
-                      subtitle: 'Up to 70% OFF',
-                      fallbackColor: Color(0xFFFFC107),
                     ),
-                    SizedBox(width: 12),
-                    _SaleBannerCard(
-                      imageAsset: 'assets/images/sale_2.png',
-                      title: 'NEW IN',
-                      subtitle: 'Fresh arrivals daily',
-                      fallbackColor: Color(0xFF1565C0),
-                    ),
-                    SizedBox(width: 12),
-                    _SaleBannerCard(
-                      imageAsset: 'assets/images/sale_3.png',
-                      title: 'FLASH DEAL',
-                      subtitle: 'Limited time only',
-                      fallbackColor: Color(0xFFE53935),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            const SliverToBoxAdapter(child: SizedBox(height: 20)),
-
-            // ── Special For You Header ─────────────────────────────
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'Special For You',
+                    child: Text(
+                      _categoryNames[i],
                       style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: theme.colorScheme.onSurface,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                        color: selected
+                            ? Colors.white
+                            : AppColors.textSecondary,
                       ),
                     ),
-                    GestureDetector(
-                      onTap: () => Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => const CategoryScreen(),
-                        ),
-                      ),
-                      child: const Text(
-                        'See All',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: AppColors.primary,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ),
+
+        const SliverToBoxAdapter(child: SizedBox(height: 16)),
+
+        // ── Ads (Sale Banners) ────────────────────────────────
+        if (ads.isNotEmpty)
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 110,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: ads.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 12),
+                itemBuilder: (_, i) => _AdCard(ad: ads[i]),
+              ),
+            ),
+          ),
+
+        const SliverToBoxAdapter(child: SizedBox(height: 20)),
+        // ── Category Products (when a category is selected) ───
+        if (_selectedCategory > 0) ...[
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                _categoryNames[_selectedCategory],
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurface,
                 ),
               ),
             ),
-
-            const SliverToBoxAdapter(child: SizedBox(height: 12)),
-
-            // ── Product Grid ──────────────────────────────────────
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 12)),
+          if (_isCategoryLoading)
+            const SliverToBoxAdapter(
+              child: Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32),
+                  child: CircularProgressIndicator(color: AppColors.primary),
+                ),
+              ),
+            )
+          else if (_categoryProducts != null && _categoryProducts!.isNotEmpty)
             SliverPadding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               sliver: SliverGrid(
                 delegate: SliverChildBuilderDelegate(
-                  (_, i) => ProductCard(product: _filteredProducts[i]),
-                  childCount: _filteredProducts.length,
+                  (_, i) => ProductCard(product: _categoryProducts![i]),
+                  childCount: _categoryProducts!.length,
                 ),
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 2,
@@ -295,9 +362,185 @@ class _HomeScreenState extends State<HomeScreen> {
                   childAspectRatio: 0.72,
                 ),
               ),
+            )
+          else if (_categoryProducts != null && _categoryProducts!.isEmpty)
+            const SliverToBoxAdapter(
+              child: Center(
+                child: Padding(
+                  padding: EdgeInsets.all(32),
+                  child: Text(
+                    'No products in this category',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
             ),
+          const SliverToBoxAdapter(child: SizedBox(height: 20)),
+        ],
+        // ── Popular Products Header ───────────────────────────
+        if (popularProducts.isNotEmpty) ...[
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                'Popular Products',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+            ),
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 12)),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            sliver: SliverGrid(
+              delegate: SliverChildBuilderDelegate(
+                (_, i) => ProductCard(product: popularProducts[i]),
+                childCount: popularProducts.length,
+              ),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+                childAspectRatio: 0.72,
+              ),
+            ),
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 20)),
+        ],
 
-            const SliverToBoxAdapter(child: SizedBox(height: 24)),
+        // ── Just For You Header ───────────────────────────────
+        if (justForYouProducts.isNotEmpty) ...[
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Just For You',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const CategoryScreen()),
+                    ),
+                    child: const Text(
+                      'See All',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 12)),
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            sliver: SliverGrid(
+              delegate: SliverChildBuilderDelegate(
+                (_, i) => ProductCard(product: justForYouProducts[i]),
+                childCount: justForYouProducts.length,
+              ),
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+                childAspectRatio: 0.72,
+              ),
+            ),
+          ),
+        ],
+
+        // ── Shops Section ─────────────────────────────────────
+        if (data.shops.isNotEmpty) ...[
+          const SliverToBoxAdapter(child: SizedBox(height: 20)),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                'Top Shops',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+            ),
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 12)),
+          SliverToBoxAdapter(
+            child: SizedBox(
+              height: 100,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: data.shops.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 12),
+                itemBuilder: (_, i) => _ShopCard(shop: data.shops[i]),
+              ),
+            ),
+          ),
+        ],
+
+        const SliverToBoxAdapter(child: SizedBox(height: 24)),
+      ],
+    );
+  }
+}
+
+// ── Error view ─────────────────────────────────────────────────────────────
+
+class _ErrorView extends StatelessWidget {
+  final String error;
+  final VoidCallback onRetry;
+
+  const _ErrorView({required this.error, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.wifi_off_rounded, size: 48, color: AppColors.grey),
+            const SizedBox(height: 16),
+            Text(
+              error,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 14,
+                color: AppColors.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: onRetry,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(30),
+                ),
+              ),
+              child: const Text('Retry'),
+            ),
           ],
         ),
       ),
@@ -358,16 +601,8 @@ class _SearchBar extends StatelessWidget {
 }
 
 class _BannerCard extends StatelessWidget {
-  final String imageAsset;
-  final String title;
-  final String subtitle;
-  final Color fallbackColor;
-  const _BannerCard({
-    required this.imageAsset,
-    required this.title,
-    required this.subtitle,
-    required this.fallbackColor,
-  });
+  final HomeBanner banner;
+  const _BannerCard({required this.banner});
 
   @override
   Widget build(BuildContext context) {
@@ -376,43 +611,24 @@ class _BannerCard extends StatelessWidget {
       decoration: BoxDecoration(borderRadius: BorderRadius.circular(16)),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(16),
-        child: Image.asset(
-          imageAsset,
+        child: Image.network(
+          banner.thumbnail,
           width: double.infinity,
           height: 140,
           fit: BoxFit.cover,
           errorBuilder: (_, __, ___) => Container(
             width: double.infinity,
             height: 140,
-            color: fallbackColor,
+            color: AppColors.primary,
             padding: const EdgeInsets.all(20),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(
-                        title,
-                        style: const TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w800,
-                          color: Colors.white,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        subtitle,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.white70,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+            alignment: Alignment.centerLeft,
+            child: Text(
+              banner.title,
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: Colors.white,
+              ),
             ),
           ),
         ),
@@ -421,52 +637,78 @@ class _BannerCard extends StatelessWidget {
   }
 }
 
-class _SaleBannerCard extends StatelessWidget {
-  final String imageAsset;
-  final String title;
-  final String subtitle;
-  final Color fallbackColor;
-  const _SaleBannerCard({
-    required this.imageAsset,
-    required this.title,
-    required this.subtitle,
-    required this.fallbackColor,
-  });
+class _AdCard extends StatelessWidget {
+  final HomeAd ad;
+  const _AdCard({required this.ad});
 
   @override
   Widget build(BuildContext context) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
-      child: Image.asset(
-        imageAsset,
-        width: 160,
+      child: Image.network(
+        ad.thumbnail,
+        width: 200,
         height: 110,
         fit: BoxFit.cover,
         errorBuilder: (_, __, ___) => Container(
-          width: 160,
+          width: 200,
           height: 110,
-          color: fallbackColor,
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w900,
-                  color: Colors.white,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: const TextStyle(fontSize: 11, color: Colors.white70),
-              ),
-            ],
+          color: AppColors.grey,
+          alignment: Alignment.center,
+          child: Text(
+            ad.title,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Colors.white,
+            ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ShopCard extends StatelessWidget {
+  final HomeShop shop;
+  const _ShopCard({required this.shop});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: 90,
+      decoration: BoxDecoration(
+        color: theme.cardColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.dividerColor),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          CircleAvatar(
+            radius: 24,
+            backgroundImage: NetworkImage(shop.logo),
+            backgroundColor: AppColors.lightGrey,
+          ),
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Text(
+              shop.name,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: theme.colorScheme.onSurface,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+            ),
+          ),
+          if (shop.isVerified == 1)
+            const Icon(Icons.verified, size: 14, color: AppColors.primary),
+        ],
       ),
     );
   }

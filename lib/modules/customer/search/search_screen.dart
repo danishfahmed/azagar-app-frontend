@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:azager/core/constants/app_colors.dart';
-import 'package:azager/core/constants/dummy_data.dart';
 import 'package:azager/core/models/product_model.dart';
+import 'package:azager/core/network/api_exception.dart';
+import 'package:azager/core/services/product_service.dart';
 import 'package:azager/modules/shared/widgets/product_card.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -15,69 +18,176 @@ class SearchScreen extends StatefulWidget {
 class _SearchScreenState extends State<SearchScreen> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
-  List<String> _recentSearches = List<String>.from(DummyData.recentSearches);
+  final _searchService = SearchService();
+
+  Timer? _debounce;
   String _query = '';
+  bool _isLoadingResults = false;
+  bool _isLoadingRecent = true;
+  String? _error;
+
+  List<ProductModel> _results = const [];
+  List<String> _suggestions = const [];
+  List<RecentSearchItem> _recentSearches = const [];
 
   @override
   void initState() {
     super.initState();
-    if (widget.initialQuery.isNotEmpty) {
-      _controller.text = widget.initialQuery;
-      _query = widget.initialQuery;
+    _loadRecentSearches();
+
+    if (widget.initialQuery.trim().isNotEmpty) {
+      _controller.text = widget.initialQuery.trim();
+      _query = widget.initialQuery.trim();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _controller.selection = TextSelection.fromPosition(
           TextPosition(offset: _controller.text.length),
         );
       });
+      _performSearch(_query, withLoader: true);
     } else {
       WidgetsBinding.instance.addPostFrameCallback(
         (_) => _focusNode.requestFocus(),
       );
     }
-    _controller.addListener(() {
-      setState(() => _query = _controller.text.trim());
-    });
+
+    _controller.addListener(_onQueryChanged);
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _debounce?.cancel();
+    _controller
+      ..removeListener(_onQueryChanged)
+      ..dispose();
     _focusNode.dispose();
+    _searchService.dispose();
     super.dispose();
   }
 
-  List<ProductModel> get _results {
-    if (_query.isEmpty) return [];
-    return DummyData.products
-        .where(
-          (p) =>
-              p.name.toLowerCase().contains(_query.toLowerCase()) ||
-              p.category.toLowerCase().contains(_query.toLowerCase()),
-        )
-        .toList();
+  Future<void> _loadRecentSearches() async {
+    setState(() {
+      _isLoadingRecent = true;
+    });
+
+    try {
+      final recent = await _searchService.getRecentSearches();
+      if (!mounted) return;
+      setState(() {
+        _recentSearches = recent;
+        _isLoadingRecent = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isLoadingRecent = false;
+      });
+    }
   }
 
-  void _submitSearch(String q) {
-    final trimmed = q.trim();
-    if (trimmed.isEmpty) return;
+  void _onQueryChanged() {
+    final next = _controller.text.trim();
     setState(() {
-      _recentSearches.remove(trimmed);
-      _recentSearches.insert(0, trimmed);
-      if (_recentSearches.length > 10) {
-        _recentSearches = _recentSearches.sublist(0, 10);
-      }
+      _query = next;
+      _error = null;
+    });
+
+    _debounce?.cancel();
+
+    if (next.isEmpty) {
+      setState(() {
+        _results = const [];
+        _suggestions = const [];
+      });
+      return;
+    }
+
+    _debounce = Timer(const Duration(milliseconds: 350), () {
+      _loadSuggestions(next);
+      _performSearch(next, withLoader: false);
     });
   }
 
-  void _removeRecent(String item) {
-    setState(() => _recentSearches.remove(item));
+  Future<void> _loadSuggestions(String query) async {
+    try {
+      final items = await _searchService.getSearchSuggestions(query: query);
+      if (!mounted || _query != query) return;
+      setState(() {
+        _suggestions = items.take(8).toList();
+      });
+    } catch (_) {
+      // Suggestions are non-blocking.
+    }
+  }
+
+  Future<void> _performSearch(String query, {required bool withLoader}) async {
+    if (query.trim().isEmpty) return;
+
+    if (withLoader) {
+      setState(() {
+        _isLoadingResults = true;
+      });
+    }
+
+    try {
+      final items = await _searchService.searchProducts(query: query);
+      if (!mounted || _query != query.trim()) return;
+      setState(() {
+        _results = items;
+        _isLoadingResults = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted || _query != query.trim()) return;
+      setState(() {
+        _results = const [];
+        _error = e.message;
+        _isLoadingResults = false;
+      });
+    } catch (_) {
+      if (!mounted || _query != query.trim()) return;
+      setState(() {
+        _results = const [];
+        _error = 'Unable to search products right now.';
+        _isLoadingResults = false;
+      });
+    }
+  }
+
+  void _submitSearch(String query) {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) return;
+    _performSearch(trimmed, withLoader: true);
+    _focusNode.unfocus();
+  }
+
+  Future<void> _removeRecent(RecentSearchItem item) async {
+    setState(() {
+      _recentSearches = _recentSearches.where((x) => x.id != item.id).toList();
+    });
+
+    if (item.id <= 0) return;
+
+    try {
+      await _searchService.deleteRecentSearch(item.id);
+    } catch (_) {
+      // Keep optimistic UI state.
+    }
+  }
+
+  Future<void> _clearRecent() async {
+    final old = _recentSearches;
+    setState(() => _recentSearches = const []);
+
+    try {
+      await _searchService.clearRecentSearches();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _recentSearches = old);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final bool isSearching = _query.isNotEmpty;
-    final bool hasResults = _results.isNotEmpty;
 
     return Scaffold(
       backgroundColor: AppColors.scaffold,
@@ -85,7 +195,6 @@ class _SearchScreenState extends State<SearchScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Search Bar ──────────────────────────────────────
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               child: Row(
@@ -117,7 +226,7 @@ class _SearchScreenState extends State<SearchScreen> {
                                 color: theme.colorScheme.onSurface,
                               ),
                               decoration: InputDecoration(
-                                hintText: 'Explore Fashion',
+                                hintText: 'Search products',
                                 hintStyle: TextStyle(
                                   fontSize: 14,
                                   color: theme.colorScheme.onSurfaceVariant,
@@ -131,7 +240,9 @@ class _SearchScreenState extends State<SearchScreen> {
                             GestureDetector(
                               onTap: () => _controller.clear(),
                               child: Padding(
-                                padding: EdgeInsets.symmetric(horizontal: 8),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                ),
                                 child: Icon(
                                   Icons.close,
                                   size: 18,
@@ -160,70 +271,176 @@ class _SearchScreenState extends State<SearchScreen> {
                 ],
               ),
             ),
-
-            // ── Body ────────────────────────────────────────────
-            Expanded(
-              child: isSearching
-                  ? (hasResults
-                        ? _SearchResults(query: _query, results: _results)
-                        : _NoResults(query: _query))
-                  : _RecentSearches(
-                      searches: _recentSearches,
-                      onTap: (s) {
-                        _controller.text = s;
-                        _controller.selection = TextSelection.fromPosition(
-                          TextPosition(offset: s.length),
-                        );
-                      },
-                      onRemove: _removeRecent,
-                    ),
-            ),
+            Expanded(child: _buildBody()),
           ],
         ),
       ),
     );
   }
+
+  Widget _buildBody() {
+    if (_query.isNotEmpty) {
+      if (_isLoadingResults && _results.isEmpty) {
+        return const Center(
+          child: CircularProgressIndicator(color: AppColors.primary),
+        );
+      }
+
+      if (_results.isNotEmpty) {
+        return _SearchResults(query: _query, results: _results);
+      }
+
+      if (_suggestions.isNotEmpty) {
+        return _SuggestionsList(
+          suggestions: _suggestions,
+          onTap: (value) {
+            _controller.text = value;
+            _controller.selection = TextSelection.fromPosition(
+              TextPosition(offset: value.length),
+            );
+            _submitSearch(value);
+          },
+        );
+      }
+
+      if (_error != null) {
+        return _InlineError(message: _error!);
+      }
+
+      return _NoResults(query: _query);
+    }
+
+    if (_isLoadingRecent) {
+      return const Center(
+        child: CircularProgressIndicator(color: AppColors.primary),
+      );
+    }
+
+    return _RecentSearches(
+      searches: _recentSearches,
+      onTap: (item) {
+        _controller.text = item.query;
+        _controller.selection = TextSelection.fromPosition(
+          TextPosition(offset: item.query.length),
+        );
+        _submitSearch(item.query);
+      },
+      onRemove: _removeRecent,
+      onClearAll: _recentSearches.isEmpty ? null : _clearRecent,
+    );
+  }
 }
 
-// ── Recent Searches ────────────────────────────────────────────────────────
-
 class _RecentSearches extends StatelessWidget {
-  final List<String> searches;
-  final ValueChanged<String> onTap;
-  final ValueChanged<String> onRemove;
+  final List<RecentSearchItem> searches;
+  final ValueChanged<RecentSearchItem> onTap;
+  final ValueChanged<RecentSearchItem> onRemove;
+  final VoidCallback? onClearAll;
 
   const _RecentSearches({
     required this.searches,
     required this.onTap,
     required this.onRemove,
+    required this.onClearAll,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+
+    if (searches.isEmpty) {
+      return Center(
+        child: Text(
+          'No recent searches yet',
+          style: TextStyle(
+            fontSize: 14,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Recent Searches',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              TextButton(onPressed: onClearAll, child: const Text('Clear All')),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: searches.length,
+            itemBuilder: (_, i) {
+              final item = searches[i];
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  Icons.history,
+                  color: theme.colorScheme.onSurfaceVariant,
+                  size: 20,
+                ),
+                title: Text(
+                  item.query,
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+                trailing: GestureDetector(
+                  onTap: () => onRemove(item),
+                  child: Icon(
+                    Icons.close,
+                    size: 18,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                onTap: () => onTap(item),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SuggestionsList extends StatelessWidget {
+  final List<String> suggestions;
+  final ValueChanged<String> onTap;
+
+  const _SuggestionsList({required this.suggestions, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return ListView.builder(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      itemCount: searches.length,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      itemCount: suggestions.length,
       itemBuilder: (_, i) {
-        final item = searches[i];
+        final item = suggestions[i];
         return ListTile(
           contentPadding: EdgeInsets.zero,
           leading: Icon(
-            Icons.history,
+            Icons.north_west,
+            size: 18,
             color: theme.colorScheme.onSurfaceVariant,
-            size: 20,
           ),
           title: Text(
             item,
             style: TextStyle(fontSize: 14, color: theme.colorScheme.onSurface),
-          ),
-          trailing: GestureDetector(
-            onTap: () => onRemove(item),
-            child: Icon(
-              Icons.close,
-              size: 18,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
           ),
           onTap: () => onTap(item),
         );
@@ -231,8 +448,6 @@ class _RecentSearches extends StatelessWidget {
     );
   }
 }
-
-// ── Search Results ─────────────────────────────────────────────────────────
 
 class _SearchResults extends StatelessWidget {
   final String query;
@@ -245,7 +460,6 @@ class _SearchResults extends StatelessWidget {
     final theme = Theme.of(context);
     return CustomScrollView(
       slivers: [
-        // Header
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
@@ -271,14 +485,12 @@ class _SearchResults extends StatelessWidget {
             ),
           ),
         ),
-
-        // Product grid
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           sliver: SliverGrid(
             delegate: SliverChildBuilderDelegate(
               (_, i) => ProductCard(product: results[i]),
-              childCount: results.length > 2 ? 2 : results.length,
+              childCount: results.length,
             ),
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 2,
@@ -288,90 +500,38 @@ class _SearchResults extends StatelessWidget {
             ),
           ),
         ),
-
-        // Mega Sale inline banner
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            child: Container(
-              height: 130,
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFC107),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Text(
-                      'SHOP NOW',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white70,
-                        letterSpacing: 2,
-                      ),
-                    ),
-                    Text(
-                      'MEGA SALE',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w900,
-                        color: Colors.black87,
-                      ),
-                    ),
-                    Text(
-                      'UP TO 70% OFF',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.black54,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-
-        // Remaining products
-        if (results.length > 2)
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            sliver: SliverGrid(
-              delegate: SliverChildBuilderDelegate(
-                (_, i) => ProductCard(product: results[i + 2]),
-                childCount: results.length - 2,
-              ),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                childAspectRatio: 0.72,
-              ),
-            ),
-          ),
-
         const SliverToBoxAdapter(child: SizedBox(height: 24)),
       ],
     );
   }
 }
 
-// ── No Results ─────────────────────────────────────────────────────────────
+class _InlineError extends StatelessWidget {
+  final String message;
+
+  const _InlineError({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Text(
+          message,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 14,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _NoResults extends StatelessWidget {
   final String query;
   const _NoResults({required this.query});
-
-  /// Very simple "did you mean" suggestion
-  String get _suggestion {
-    final words = query.split(' ');
-    return words
-        .map((w) => w.isNotEmpty ? w[0].toUpperCase() + w.substring(1) : w)
-        .join(' ');
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -389,23 +549,9 @@ class _NoResults extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          RichText(
-            text: TextSpan(
-              text: 'Did you mean ',
-              style: const TextStyle(
-                fontSize: 13,
-                color: AppColors.textSecondary,
-              ),
-              children: [
-                TextSpan(
-                  text: '"$_suggestion"',
-                  style: const TextStyle(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
+          const Text(
+            'Try another keyword or category name.',
+            style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
           ),
         ],
       ),

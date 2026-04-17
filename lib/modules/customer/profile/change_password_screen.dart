@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:azager/core/constants/app_colors.dart';
+import 'package:azager/core/services/auth_service.dart';
+import 'package:azager/core/network/api_exception.dart';
 
 class ChangePasswordScreen extends StatefulWidget {
   const ChangePasswordScreen({super.key});
@@ -12,20 +14,25 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
   final _currentCtrl = TextEditingController();
   final _newCtrl = TextEditingController();
   final _confirmCtrl = TextEditingController();
+  final _authService = AuthService();
   bool _hideCurrent = true;
   bool _hideNew = true;
   bool _hideConfirm = true;
+  bool _isLoading = false;
 
   @override
   void dispose() {
     _currentCtrl.dispose();
     _newCtrl.dispose();
     _confirmCtrl.dispose();
+    _authService.dispose();
     super.dispose();
   }
 
-  void _save() {
-    if (_newCtrl.text.trim().isEmpty || _confirmCtrl.text.trim().isEmpty) {
+  Future<void> _save() async {
+    if (_currentCtrl.text.trim().isEmpty ||
+        _newCtrl.text.trim().isEmpty ||
+        _confirmCtrl.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Please fill all password fields'),
@@ -45,13 +52,45 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Password updated successfully'),
-        backgroundColor: AppColors.primary,
-      ),
-    );
-    Navigator.pop(context);
+    setState(() => _isLoading = true);
+
+    try {
+      await _authService.changePassword(
+        currentPassword: _currentCtrl.text.trim(),
+        password: _newCtrl.text.trim(),
+        passwordConfirmation: _confirmCtrl.text.trim(),
+      );
+
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Password updated successfully'),
+          backgroundColor: AppColors.primary,
+        ),
+      );
+      Navigator.pop(context);
+    } on ApiValidationException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: Colors.red),
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: Colors.red),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Something went wrong. Please try again.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   @override
@@ -112,7 +151,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
           SizedBox(
             height: 52,
             child: ElevatedButton(
-              onPressed: _save,
+              onPressed: _isLoading ? null : _save,
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primary,
                 foregroundColor: Colors.white,
@@ -121,10 +160,22 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                   borderRadius: BorderRadius.circular(30),
                 ),
               ),
-              child: const Text(
-                'Update Password',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-              ),
+              child: _isLoading
+                  ? const SizedBox(
+                      width: 24,
+                      height: 24,
+                      child: CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2.5,
+                      ),
+                    )
+                  : const Text(
+                      'Update Password',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
             ),
           ),
         ],

@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:azager/core/constants/app_colors.dart';
 import 'package:azager/core/theme/app_theme_controller.dart';
+import 'package:azager/core/services/session_manager.dart';
 import 'package:azager/modules/shared/screens/splash_screen.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SessionManager.init();
+  AppThemeController.setDarkMode(SessionManager.isDarkMode);
   runApp(const MyApp());
 }
 

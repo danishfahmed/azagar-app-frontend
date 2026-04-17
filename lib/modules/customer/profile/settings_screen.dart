@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:azager/core/constants/app_colors.dart';
 import 'package:azager/core/theme/app_theme_controller.dart';
+import 'package:azager/core/services/session_manager.dart';
 import 'package:azager/modules/customer/profile/change_password_screen.dart';
 import 'package:azager/modules/seller/home/seller_shell.dart';
 
@@ -117,7 +118,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           );
                         }
                       },
-                      activeColor: Colors.white,
+                      activeThumbColor: Colors.white,
                       activeTrackColor: Colors.white30,
                       inactiveThumbColor: Colors.white,
                       inactiveTrackColor: Colors.white30,
@@ -173,6 +174,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 value: darkModeEnabled,
                 onChanged: (v) {
                   AppThemeController.setDarkMode(v);
+                  SessionManager.setDarkMode(v);
                 },
                 isLast: true,
                 backgroundColor: cardColor,
@@ -286,7 +288,7 @@ class _SwitchTile extends StatelessWidget {
             trailing: Switch(
               value: value,
               onChanged: onChanged,
-              activeColor: AppColors.primary,
+              activeThumbColor: AppColors.primary,
             ),
             dense: true,
           ),
